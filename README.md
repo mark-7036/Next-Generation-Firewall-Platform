@@ -1,4 +1,4 @@
-Next-Generation-Firewall-Platform
+Securly Next-Generation-Firewall-Platform
 
 A powerful PyQt5-based firewall application for Windows that provides real-time packet monitoring, IP/port blocking, domain filtering, and comprehensive security logging.
 
