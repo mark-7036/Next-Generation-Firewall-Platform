@@ -1,0 +1,8 @@
+{
+  "blocked_ips": [],
+  "blocked_ports": [],
+  "blocked_protocols": [],
+  "dpi_patterns": [],
+  "custom_blocklist": [],
+  "blocked_domains": []
+}
