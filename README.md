@@ -347,4 +347,4 @@ For issues, questions, or feature requests:
 
 **Happy firewalling! 🔥**
 
-*pfSense for Windows — Secure your network, one rule at a time.*
+*Securly— Secure your network, one rule at a time.*
