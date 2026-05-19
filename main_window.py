@@ -409,7 +409,7 @@ class SettingsTab(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("🔥 pfSense for Windows - Advanced Firewall")
+        self.setWindowTitle("Securly NGFW")
         self.setGeometry(100, 100, 1000, 700)
         
         try:
