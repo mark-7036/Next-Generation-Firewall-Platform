@@ -58,7 +58,7 @@ A powerful PyQt5-based firewall application for Windows that provides real-time 
 
 1. **Clone or download the repository:**
    ```bash
-   git clone https://github.com/yourusername/firewall-windows.git
+   git clone https://github.com/mark-7036/Securly-NGFW-Platform.git
    cd firewall-windows
    ```
 
@@ -334,7 +334,7 @@ Contributions welcome! Please:
 
 ## License
 
-MIT License — see LICENSE file for details
+Proprietary License — see LICENSE file for details
 
 ## Support
 
