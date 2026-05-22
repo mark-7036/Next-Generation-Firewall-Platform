@@ -1,6 +1,8 @@
 import sys
+import time
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QListWidget, QLineEdit, QMessageBox
+    QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QListWidget, QLineEdit, QMessageBox,
+    QDialog, QFormLayout, QDialogButtonBox, QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QSpinBox, QComboBox, QTextEdit
 )
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QFont, QColor, QPalette
@@ -316,6 +318,522 @@ class LogsTab(QWidget):
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"Failed to clear logs: {e}")
 
+
+class PacketEngineDialog(QDialog):
+    def __init__(self, controller, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("Packet Engine Control")
+        self.resize(560, 260)
+
+        layout = QVBoxLayout(self)
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        form = QFormLayout()
+        self.engine_box = QComboBox()
+        self.engine_options = self.controller.get_packet_engine_options()
+        for option in self.engine_options:
+            label = option["label"]
+            if not option.get("available", False):
+                label = f"{label} (unavailable)"
+            self.engine_box.addItem(label, option["engine"])
+        form.addRow("Packet Engine", self.engine_box)
+        layout.addLayout(form)
+
+        buttons = QHBoxLayout()
+        apply_btn = QPushButton("Apply")
+        apply_btn.clicked.connect(self.apply_engine)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self.refresh)
+        buttons.addWidget(apply_btn)
+        buttons.addWidget(refresh_btn)
+        layout.addLayout(buttons)
+
+        self.refresh()
+
+    def refresh(self):
+        status = self.controller.get_packet_engine_status()
+        current = self.controller.get_packet_engine()
+        index = self.engine_box.findData(current)
+        if index >= 0:
+            self.engine_box.setCurrentIndex(index)
+        self.status_label.setText(
+            f"Selected: {status.get('selected')} | Effective: {status.get('effective')} | "
+            f"Mode: {status.get('enforcement')}\n{status.get('description', '')}"
+        )
+
+    def apply_engine(self):
+        engine = self.engine_box.currentData()
+        result = self.controller.set_packet_engine(engine)
+        if isinstance(result, dict) and result.get("error"):
+            QMessageBox.warning(self, "Packet Engine", result["error"])
+            return
+        self.refresh()
+        QMessageBox.information(
+            self,
+            "Packet Engine",
+            f"Engine set to {result.get('selected')} ({result.get('enforcement')}).",
+        )
+
+class NatEditorDialog(QDialog):
+    def __init__(self, controller, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("Network Policy Engine - NAT / Port Forwarding")
+        self.resize(720, 460)
+
+        layout = QVBoxLayout(self)
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Protocol", "External Port", "Internal IP", "Internal Port", "Status"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.table)
+
+        form = QFormLayout()
+        self.protocol_box = QComboBox()
+        self.protocol_box.addItems(["TCP", "UDP"])
+        self.ext_port_input = QSpinBox()
+        self.ext_port_input.setRange(1, 65535)
+        self.int_ip_input = QLineEdit()
+        self.int_ip_input.setPlaceholderText("192.168.1.10")
+        self.int_port_input = QSpinBox()
+        self.int_port_input.setRange(1, 65535)
+        form.addRow("Protocol", self.protocol_box)
+        form.addRow("External Port", self.ext_port_input)
+        form.addRow("Internal IP", self.int_ip_input)
+        form.addRow("Internal Port", self.int_port_input)
+        layout.addLayout(form)
+
+        buttons = QHBoxLayout()
+        add_btn = QPushButton("Add Rule")
+        add_btn.clicked.connect(self.add_rule)
+        remove_btn = QPushButton("Remove Selected")
+        remove_btn.clicked.connect(self.remove_selected)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self.refresh)
+        sync_btn = QPushButton("Sync Rules")
+        sync_btn.clicked.connect(self.sync_rules)
+        buttons.addWidget(add_btn)
+        buttons.addWidget(remove_btn)
+        buttons.addWidget(refresh_btn)
+        buttons.addWidget(sync_btn)
+        layout.addLayout(buttons)
+
+        self.status = QLabel()
+        layout.addWidget(self.status)
+        self.refresh()
+
+    def refresh(self):
+        rules = self.controller.get_nat_rules()
+        self.table.setRowCount(0)
+        for key, rule in rules.items():
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            protocol = str(rule.get("protocol", "TCP"))
+            ext_port = str(rule.get("ext_port", ""))
+            self.table.setItem(row, 0, QTableWidgetItem(protocol))
+            self.table.setItem(row, 1, QTableWidgetItem(ext_port))
+            self.table.setItem(row, 2, QTableWidgetItem(str(rule.get("int_ip", ""))))
+            self.table.setItem(row, 3, QTableWidgetItem(str(rule.get("int_port", ""))))
+            verification = self.controller.verify_nat_rule(ext_port, protocol)
+            self.table.setItem(row, 4, QTableWidgetItem(verification.get("message", "Unknown")))
+        self.status.setText(f"Loaded {len(rules)} NAT rule(s).")
+
+    def add_rule(self):
+        result = self.controller.add_nat_rule(
+            self.ext_port_input.value(),
+            self.int_ip_input.text().strip(),
+            self.int_port_input.value(),
+            self.protocol_box.currentText(),
+        )
+        self.status.setText(result)
+        self.refresh()
+
+    def remove_selected(self):
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "NAT / Port Forwarding", "Select a rule to remove.")
+            return
+        protocol = self.table.item(row, 0).text()
+        ext_port = self.table.item(row, 1).text()
+        result = self.controller.remove_nat_rule(ext_port, protocol)
+        self.status.setText(result)
+        self.refresh()
+
+    def sync_rules(self):
+        results = self.controller.sync_nat_rules()
+        active = sum(1 for item in results if item.get("status") == "active")
+        reapplied = sum(1 for item in results if item.get("status") == "reapplied")
+        failed = sum(1 for item in results if item.get("status") == "failed")
+        self.status.setText(f"Sync complete: {active} active, {reapplied} reapplied, {failed} failed.")
+        self.refresh()
+
+
+class VpnDialog(QDialog):
+    def __init__(self, controller, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("VPN Integration Layer")
+        self.resize(520, 260)
+
+        layout = QVBoxLayout(self)
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        buttons = QHBoxLayout()
+        enable_btn = QPushButton("Enable / Connect")
+        enable_btn.clicked.connect(self.enable_vpn)
+        disable_btn = QPushButton("Disable / Disconnect")
+        disable_btn.clicked.connect(self.disable_vpn)
+        refresh_btn = QPushButton("Refresh Status")
+        refresh_btn.clicked.connect(self.refresh)
+        buttons.addWidget(enable_btn)
+        buttons.addWidget(disable_btn)
+        buttons.addWidget(refresh_btn)
+        layout.addLayout(buttons)
+        self.refresh()
+
+    def refresh(self):
+        self.status_label.setText(self.controller.get_vpn_status())
+
+    def enable_vpn(self):
+        QMessageBox.information(self, "VPN", self.controller.toggle_vpn(True))
+        self.refresh()
+
+    def disable_vpn(self):
+        QMessageBox.information(self, "VPN", self.controller.toggle_vpn(False))
+        self.refresh()
+
+
+class DnsDialog(QDialog):
+    def __init__(self, controller, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("Secure Configuration Manager - DNS Configuration")
+        self.resize(520, 360)
+
+        layout = QVBoxLayout(self)
+        self.list_widget = QListWidget()
+        layout.addWidget(self.list_widget)
+
+        form = QHBoxLayout()
+        self.dns_input = QLineEdit()
+        self.dns_input.setPlaceholderText("8.8.8.8")
+        add_btn = QPushButton("Add")
+        add_btn.clicked.connect(self.add_dns)
+        remove_btn = QPushButton("Remove Selected")
+        remove_btn.clicked.connect(self.remove_selected)
+        apply_btn = QPushButton("Apply")
+        apply_btn.clicked.connect(self.apply_dns)
+        form.addWidget(self.dns_input)
+        form.addWidget(add_btn)
+        form.addWidget(remove_btn)
+        form.addWidget(apply_btn)
+        layout.addLayout(form)
+
+        self.status = QLabel()
+        layout.addWidget(self.status)
+        self.refresh()
+
+    def refresh(self):
+        self.list_widget.clear()
+        for dns in self.controller.get_dns_config():
+            self.list_widget.addItem(str(dns))
+        self.status.setText("DNS servers loaded.")
+
+    def add_dns(self):
+        value = self.dns_input.text().strip()
+        if value:
+            self.list_widget.addItem(value)
+            self.dns_input.clear()
+
+    def remove_selected(self):
+        row = self.list_widget.currentRow()
+        if row >= 0:
+            self.list_widget.takeItem(row)
+
+    def apply_dns(self):
+        dns_list = [self.list_widget.item(i).text().strip() for i in range(self.list_widget.count()) if self.list_widget.item(i).text().strip()]
+        result = self.controller.set_dns_servers(dns_list)
+        self.status.setText(result)
+
+
+class QosDialog(QDialog):
+    def __init__(self, controller, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("Firewall Analytics Module - QoS Rule Management")
+        self.resize(720, 420)
+
+        layout = QVBoxLayout(self)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Name", "IP Range", "Bandwidth (Mbps)"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.table)
+
+        form = QFormLayout()
+        self.name_input = QLineEdit()
+        self.range_input = QLineEdit()
+        self.bandwidth_input = QSpinBox()
+        self.bandwidth_input.setRange(1, 100000)
+        form.addRow("Rule Name", self.name_input)
+        form.addRow("IP Range", self.range_input)
+        form.addRow("Bandwidth", self.bandwidth_input)
+        layout.addLayout(form)
+
+        buttons = QHBoxLayout()
+        add_btn = QPushButton("Add Rule")
+        add_btn.clicked.connect(self.add_rule)
+        remove_btn = QPushButton("Remove Selected")
+        remove_btn.clicked.connect(self.remove_selected)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self.refresh)
+        buttons.addWidget(add_btn)
+        buttons.addWidget(remove_btn)
+        buttons.addWidget(refresh_btn)
+        layout.addLayout(buttons)
+
+        self.status = QLabel()
+        layout.addWidget(self.status)
+        self.refresh()
+
+    def refresh(self):
+        rules = self.controller.get_qos_rules()
+        self.table.setRowCount(0)
+        for name, rule in rules.items():
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(str(name)))
+            self.table.setItem(row, 1, QTableWidgetItem(str(rule.get("ip_range", ""))))
+            self.table.setItem(row, 2, QTableWidgetItem(str(rule.get("bandwidth_mbps", ""))))
+        self.status.setText(f"Loaded {len(rules)} QoS rule(s).")
+
+    def add_rule(self):
+        result = self.controller.add_qos_rule(self.name_input.text().strip(), self.range_input.text().strip(), self.bandwidth_input.value())
+        self.status.setText(result)
+        self.refresh()
+
+    def remove_selected(self):
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        name = self.table.item(row, 0).text()
+        if hasattr(self.controller.firewall, 'qos_rules') and name in self.controller.firewall.qos_rules:
+            del self.controller.firewall.qos_rules[name]
+            self.controller.firewall.log_message(f"QoS rule removed: {name}")
+        self.refresh()
+
+
+class SecurityAlertDialog(QDialog):
+    def __init__(self, controller, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("Threat Alert Framework")
+        self.resize(680, 420)
+
+        layout = QVBoxLayout(self)
+        self.list_widget = QListWidget()
+        layout.addWidget(self.list_widget)
+
+        buttons = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self.refresh)
+        clear_btn = QPushButton("Clear Alerts")
+        clear_btn.clicked.connect(self.clear_alerts)
+        buttons.addWidget(refresh_btn)
+        buttons.addWidget(clear_btn)
+        layout.addLayout(buttons)
+
+        self.status = QLabel()
+        layout.addWidget(self.status)
+        self.refresh()
+
+    def refresh(self):
+        self.list_widget.clear()
+        alerts_data = self.controller.get_security_alerts()
+        alerts = alerts_data.get("alerts", [])
+        if not alerts:
+            self.list_widget.addItem("No alerts detected.")
+        else:
+            for alert in alerts:
+                self.list_widget.addItem(f"[{alert.get('severity', 'Unknown')}] {alert.get('type', 'Unknown')}")
+        self.status.setText(f"Total alerts: {alerts_data.get('total_alerts', 0)}")
+
+    def clear_alerts(self):
+        self.status.setText(self.controller.clear_security_alerts())
+        self.refresh()
+
+
+class BackupRestoreDialog(QDialog):
+    def __init__(self, controller, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("Configuration Recovery System")
+        self.resize(560, 220)
+
+        layout = QVBoxLayout(self)
+        self.path_input = QLineEdit()
+        self.path_input.setPlaceholderText("Select backup file path")
+        browse_btn = QPushButton("Browse")
+        browse_btn.clicked.connect(self.browse)
+        row = QHBoxLayout()
+        row.addWidget(self.path_input)
+        row.addWidget(browse_btn)
+        layout.addLayout(row)
+
+        buttons = QHBoxLayout()
+        backup_btn = QPushButton("Create Backup")
+        backup_btn.clicked.connect(self.backup)
+        restore_btn = QPushButton("Restore Backup")
+        restore_btn.clicked.connect(self.restore)
+        buttons.addWidget(backup_btn)
+        buttons.addWidget(restore_btn)
+        layout.addLayout(buttons)
+
+        self.status = QLabel()
+        layout.addWidget(self.status)
+
+    def browse(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Backup File", f"firewall_backup_{int(time.time())}.json", "JSON Files (*.json)")
+        if path:
+            self.path_input.setText(path)
+
+    def backup(self):
+        path = self.path_input.text().strip()
+        if not path:
+            QMessageBox.warning(self, "Backup", "Choose a file path first.")
+            return
+        self.status.setText(self.controller.backup_settings(path))
+
+    def restore(self):
+        path = self.path_input.text().strip()
+        if not path:
+            QMessageBox.warning(self, "Restore", "Choose a backup file first.")
+            return
+        self.status.setText(self.controller.restore_settings(path))
+
+
+class AnalyticsDialog(QDialog):
+    def __init__(self, controller, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("Firewall Analytics Module")
+        self.resize(720, 520)
+
+        layout = QVBoxLayout(self)
+        self.text = QTextEdit()
+        self.text.setReadOnly(True)
+        layout.addWidget(self.text)
+
+        buttons = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh Report")
+        refresh_btn.clicked.connect(self.refresh)
+        buttons.addWidget(refresh_btn)
+        layout.addLayout(buttons)
+        self.refresh()
+
+    def refresh(self):
+        report = self.controller.get_analytics()
+        if "error" in report:
+            self.text.setPlainText(f"Error: {report['error']}")
+            return
+        alerts = report.get("security_alerts", {})
+        self.text.setPlainText(
+            f"Timestamp: {report['timestamp']}\n"
+            f"Status: {report['firewall_status']}\n"
+            f"Uptime: {report['uptime']}\n\n"
+            f"Packets Blocked: {report['packets_blocked']}\n"
+            f"Packets Allowed: {report['packets_allowed']}\n"
+            f"Block Rate: {report['block_rate']}%\n\n"
+            f"Blocked IPs: {report['blocked_ips_count']}\n"
+            f"Blocked Ports: {report['blocked_ports_count']}\n"
+            f"Blocked Domains: {report['blocked_domains_count']}\n"
+            f"Custom Rules: {report['custom_rules_count']}\n"
+            f"Recent Traffic Events: {report['recent_traffic_events']}\n"
+            f"Security Alerts: {alerts.get('total_alerts', 0)}"
+        )
+
+
+class DomainBlockingDialog(QDialog):
+    def __init__(self, controller, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("🚫 Domain Blocking Manager")
+        self.resize(640, 420)
+
+        layout = QVBoxLayout(self)
+        
+        # Admin status indicator
+        self.admin_label = QLabel()
+        self.admin_label.setWordWrap(True)
+        layout.addWidget(self.admin_label)
+
+        # Domain list
+        self.list_widget = QListWidget()
+        layout.addWidget(self.list_widget)
+
+        # Input and buttons
+        form_layout = QHBoxLayout()
+        self.domain_input = QLineEdit()
+        self.domain_input.setPlaceholderText("e.g., linkedin.com")
+        form_layout.addWidget(self.domain_input)
+
+        add_btn = QPushButton("Add Block")
+        add_btn.clicked.connect(self.add_domain)
+        form_layout.addWidget(add_btn)
+
+        remove_btn = QPushButton("Remove Selected")
+        remove_btn.clicked.connect(self.remove_selected)
+        form_layout.addWidget(remove_btn)
+
+        layout.addLayout(form_layout)
+
+        # Status
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.refresh()
+
+    def refresh(self):
+        self.list_widget.clear()
+        domains = self.controller.get_blocked_domains()
+        if not domains:
+            self.list_widget.addItem("No domains blocked")
+        else:
+            for domain in sorted(domains):
+                self.list_widget.addItem(domain)
+        
+        is_admin = self.controller.is_admin()
+        status_text = "✅ Running as Administrator - Full enforcement enabled" if is_admin else "⚠️ NOT running as Administrator - Enforcement limited to firewall rules only"
+        self.admin_label.setText(f"Status: {status_text}")
+        self.status_label.setText(f"Total blocked domains: {len(domains)}")
+
+    def add_domain(self):
+        domain = self.domain_input.text().strip().lower()
+        if not domain:
+            QMessageBox.warning(self, "Input Error", "Please enter a domain name (e.g., linkedin.com)")
+            return
+        if domain.startswith("http://") or domain.startswith("https://"):
+            domain = domain.replace("http://", "").replace("https://", "").split("/")[0]
+        result = self.controller.add_blocked_domain(domain)
+        self.status_label.setText(result)
+        self.domain_input.clear()
+        self.refresh()
+
+    def remove_selected(self):
+        row = self.list_widget.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Selection Error", "Please select a domain to remove")
+            return
+        domain = self.list_widget.item(row).text()
+        result = self.controller.remove_blocked_domain(domain)
+        self.status_label.setText(result)
+        self.refresh()
+
+
 class SettingsTab(QWidget):
     def __init__(self, controller, parent=None):
         super().__init__(parent)
@@ -323,93 +841,73 @@ class SettingsTab(QWidget):
         layout = QVBoxLayout()
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(10)
-        
-        title = QLabel("⚙️ Settings & Configuration")
+
+        title = QLabel("⚙️ Secure Configuration Manager")
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         layout.addWidget(title)
-        
-        # Feature buttons (wire up to controller stub methods)
-        nat_btn = QPushButton("🌐 NAT / Port Forwarding")
-        nat_btn.setFont(QFont("Segoe UI", 11))
-        nat_btn.setFixedHeight(40)
-        nat_btn.clicked.connect(self.open_nat)
-        layout.addWidget(nat_btn)
 
-        vpn_btn = QPushButton("🔐 VPN Integration")
-        vpn_btn.setFont(QFont("Segoe UI", 11))
-        vpn_btn.setFixedHeight(40)
-        vpn_btn.clicked.connect(self.open_vpn)
-        layout.addWidget(vpn_btn)
+        actions = [
+            ("🌐 NAT / Port Forwarding", self.open_nat),
+            ("� Domain Blocking", self.open_domain_blocking),
+            ("�🚦 Packet Engine", self.open_packet_engine),
+            ("🔐 VPN Integration", self.open_vpn),
+            ("📡 DNS Configuration", self.open_dns),
+            ("⚡ Traffic Shaping (QoS)", self.open_qos),
+            ("🛡️ IDS/IPS Integration", self.open_ids),
+            ("💾 Backup / Restore", self.open_backup),
+            ("📊 Reports & Analytics", self.open_reports),
+        ]
 
-        dns_btn = QPushButton("📡 DNS Configuration")
-        dns_btn.setFont(QFont("Segoe UI", 11))
-        dns_btn.setFixedHeight(40)
-        dns_btn.clicked.connect(self.open_dns)
-        layout.addWidget(dns_btn)
+        for label, handler in actions:
+            button = QPushButton(label)
+            button.setFont(QFont("Segoe UI", 11))
+            button.setFixedHeight(40)
+            button.clicked.connect(handler)
+            layout.addWidget(button)
 
-        qos_btn = QPushButton("⚡ Traffic Shaping (QoS)")
-        qos_btn.setFont(QFont("Segoe UI", 11))
-        qos_btn.setFixedHeight(40)
-        qos_btn.clicked.connect(self.open_qos)
-        layout.addWidget(qos_btn)
-
-        ids_btn = QPushButton("🛡️ IDS/IPS Integration")
-        ids_btn.setFont(QFont("Segoe UI", 11))
-        ids_btn.setFixedHeight(40)
-        ids_btn.clicked.connect(self.open_ids)
-        layout.addWidget(ids_btn)
-
-        backup_btn = QPushButton("💾 Backup / Restore")
-        backup_btn.setFont(QFont("Segoe UI", 11))
-        backup_btn.setFixedHeight(40)
-        backup_btn.clicked.connect(self.open_backup)
-        layout.addWidget(backup_btn)
-
-        reports_btn = QPushButton("📊 Reports & Analytics")
-        reports_btn.setFont(QFont("Segoe UI", 11))
-        reports_btn.setFixedHeight(40)
-        reports_btn.clicked.connect(self.open_reports)
-        layout.addWidget(reports_btn)
-        
         layout.addStretch()
         self.setLayout(layout)
 
-    # --- Handlers calling controller stubs ---
-    def _call_controller(self, fn, title):
-        try:
-            if not self.controller:
-                QMessageBox.information(self, title, "Controller not available")
-                return
-            result = fn()
-            QMessageBox.information(self, title, result)
-        except Exception as e:
-            QMessageBox.warning(self, title, f"Action failed: {e}")
-
     def open_nat(self):
-        self._call_controller(self.controller.nat_port_forwarding, "NAT / Port Forwarding")
+        dialog = NatEditorDialog(self.controller, self)
+        dialog.exec_()
+
+    def open_domain_blocking(self):
+        dialog = DomainBlockingDialog(self.controller, self)
+        dialog.exec_()
+
+    def open_packet_engine(self):
+        dialog = PacketEngineDialog(self.controller, self)
+        dialog.exec_()
 
     def open_vpn(self):
-        self._call_controller(self.controller.vpn_integration, "VPN Integration")
+        dialog = VpnDialog(self.controller, self)
+        dialog.exec_()
 
     def open_dns(self):
-        self._call_controller(self.controller.dns_configuration, "DNS Configuration")
+        dialog = DnsDialog(self.controller, self)
+        dialog.exec_()
 
     def open_qos(self):
-        self._call_controller(self.controller.traffic_shaping, "Traffic Shaping (QoS)")
+        dialog = QosDialog(self.controller, self)
+        dialog.exec_()
 
     def open_ids(self):
-        self._call_controller(self.controller.ids_ips_integration, "IDS/IPS Integration")
+        dialog = SecurityAlertDialog(self.controller, self)
+        dialog.exec_()
 
     def open_backup(self):
-        self._call_controller(self.controller.backup_restore, "Backup / Restore")
+        dialog = BackupRestoreDialog(self.controller, self)
+        dialog.exec_()
 
     def open_reports(self):
-        self._call_controller(self.controller.reports_analytics, "Reports & Analytics")
+        dialog = AnalyticsDialog(self.controller, self)
+        dialog.exec_()
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Securly NGFW")
+        self.setWindowTitle("🔥 Securly Next-Generation-Firewall-Platform")
         self.setGeometry(100, 100, 1000, 700)
         
         try:
@@ -428,7 +926,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.dashboard_tab, "📊 Dashboard")
         self.tabs.addTab(self.rules_tab, "📋 Rules")
         self.tabs.addTab(self.logs_tab, "📜 Logs")
-        self.tabs.addTab(self.settings_tab, "⚙️ Settings")
+        self.tabs.addTab(self.settings_tab, "⚙️ Secure Configuration Manager")
         
         self.setCentralWidget(self.tabs)
         
